@@ -3,22 +3,34 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
+from ..config import Config
 from ..keyboards import main_menu_keyboard
+from ..utils.permissions import is_admin_chat_id
 
 
 router = Router(name="common")
 
 
+@router.message(Command("admin"))
+async def admin_only_in_work_chat(message: Message, config: Config) -> None:
+    if not is_admin_chat_id(message.chat.id, config):
+        await message.answer("Админ-панель доступна только в рабочем канале поддержки.")
+
+
 @router.message(Command("menu"))
-async def menu_command(message: Message, state: FSMContext) -> None:
+async def menu_command(message: Message, state: FSMContext, config: Config) -> None:
+    if is_admin_chat_id(message.chat.id, config):
+        return
     await state.clear()
     await message.answer("Открыл главное меню.", reply_markup=main_menu_keyboard())
 
 
 @router.message(Command("help"))
-async def help_command(message: Message) -> None:
+async def help_command(message: Message, config: Config) -> None:
+    if is_admin_chat_id(message.chat.id, config):
+        return
     await message.answer(
-        "Используйте кнопки меню, чтобы создать обращение, посмотреть FAQ или связаться с оператором.",
+        "Используйте кнопки меню, чтобы создать обращение, посмотреть FAQ или связаться с поддержкой.",
         reply_markup=main_menu_keyboard(),
     )
 
@@ -29,9 +41,10 @@ async def unknown_callback(callback: CallbackQuery) -> None:
 
 
 @router.message()
-async def unknown_message(message: Message) -> None:
+async def unknown_message(message: Message, config: Config) -> None:
+    if is_admin_chat_id(message.chat.id, config):
+        return
     await message.answer(
         "Я не понял сообщение. Пожалуйста, выберите действие в меню.",
         reply_markup=main_menu_keyboard(),
     )
-

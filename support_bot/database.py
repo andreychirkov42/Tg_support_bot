@@ -25,6 +25,7 @@ class Database:
                 telegram_id INTEGER NOT NULL UNIQUE,
                 username TEXT,
                 first_name TEXT,
+                is_blocked INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
 
@@ -34,6 +35,7 @@ class Database:
                 category TEXT NOT NULL,
                 text TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'new',
+                admin_chat_message_id INTEGER,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -45,13 +47,49 @@ class Database:
                 sender_type TEXT NOT NULL,
                 sender_id INTEGER NOT NULL,
                 text TEXT NOT NULL,
+                admin_message_id INTEGER,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS admin_actions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                admin_id INTEGER NOT NULL,
+                ticket_id INTEGER NOT NULL,
+                action TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS reply_links (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticket_id INTEGER NOT NULL,
+                admin_chat_message_id INTEGER NOT NULL UNIQUE,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            """
+        )
+        await self._ensure_column("users", "is_blocked", "INTEGER NOT NULL DEFAULT 0")
+        await self._ensure_column("tickets", "admin_chat_message_id", "INTEGER")
+        await self._ensure_column("tickets", "updated_at", "TEXT")
+        await self._ensure_column("messages", "admin_message_id", "INTEGER")
+        await connection.execute(
+            """
+            UPDATE tickets
+            SET updated_at = COALESCE(updated_at, created_at, CURRENT_TIMESTAMP)
+            WHERE updated_at IS NULL
+            """
+        )
+        await connection.executescript(
+            """
+            CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users(telegram_id);
+            CREATE INDEX IF NOT EXISTS idx_users_is_blocked ON users(is_blocked);
             CREATE INDEX IF NOT EXISTS idx_tickets_user_id ON tickets(user_id);
             CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status);
+            CREATE INDEX IF NOT EXISTS idx_tickets_admin_message ON tickets(admin_chat_message_id);
             CREATE INDEX IF NOT EXISTS idx_messages_ticket_id ON messages(ticket_id);
+            CREATE INDEX IF NOT EXISTS idx_messages_admin_message ON messages(admin_message_id);
+            CREATE INDEX IF NOT EXISTS idx_reply_links_message ON reply_links(admin_chat_message_id);
             """
         )
         await connection.commit()
@@ -83,8 +121,15 @@ class Database:
             await self._connection.close()
             self._connection = None
 
+    async def _ensure_column(self, table: str, column: str, definition: str) -> None:
+        connection = self._get_connection()
+        cursor = await connection.execute(f"PRAGMA table_info({table})")
+        columns = {str(row["name"]) for row in await cursor.fetchall()}
+        await cursor.close()
+        if column not in columns:
+            await connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
     def _get_connection(self) -> aiosqlite.Connection:
         if self._connection is None:
             raise RuntimeError("Database is not connected")
         return self._connection
-

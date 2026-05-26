@@ -1,5 +1,5 @@
+import logging
 from datetime import datetime
-from html import escape
 
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramAPIError
@@ -7,18 +7,19 @@ from aiogram.filters import CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
-from ..config import Config, STATUS_EMOJI, STATUS_LABELS
+from ..config import Config
 from ..keyboards import (
     ABOUT,
     BACK,
     CATEGORIES,
-    CONTACT_OPERATOR,
+    CONTACT_SUPPORT,
     CREATE_TICKET,
     FAQ,
     FAQ_QUESTIONS,
     MAIN_MENU,
     MY_TICKETS,
-    back_to_menu_keyboard,
+    admin_message_keyboard,
+    back_menu_keyboard,
     categories_keyboard,
     faq_answer_keyboard,
     faq_keyboard,
@@ -28,68 +29,72 @@ from ..keyboards import (
     user_tickets_keyboard,
 )
 from ..services.ticket_service import TicketService
+from ..services.user_service import UserService
 from ..states import AddTicketMessage, CreateTicket
-from .admin import format_admin_ticket
+from ..utils.formatting import format_ticket_preview, format_user_message_notice, format_user_ticket, html
+from .admin_channel import publish_ticket_card
 
 
 router = Router(name="user")
+logger = logging.getLogger(__name__)
 
 FAQ_ANSWERS = {
-    "payment": "Оплатить можно банковской картой или другим способом, который доступен на странице оплаты. Если платеж не прошел, создайте обращение в категории «Оплата».",
-    "access": "Для восстановления доступа используйте форму входа и кнопку восстановления. Если письмо не пришло, напишите нам категорию «Аккаунт».",
-    "order": "Статус заказа обычно обновляется автоматически. Если обновления давно нет, создайте обращение в категории «Заказ» и укажите номер заказа.",
-    "operator": "Нажмите «Связаться с оператором» в главном меню, опишите вопрос, и специалист ответит вам в Telegram.",
+    "payment": "Оплата проходит на странице заказа. Если платеж не прошел или списание есть, а доступ не появился, создайте обращение в категории «Оплата».",
+    "access": "Используйте восстановление доступа на странице входа. Если письмо не пришло, создайте обращение в категории «Аккаунт».",
+    "order": "Статус заказа обновляется автоматически. Если обновлений давно нет, создайте обращение в категории «Заказ» и укажите номер заказа.",
+    "support": "Нажмите «Связаться с поддержкой» или «Создать обращение», опишите вопрос, и оператор ответит прямо здесь.",
 }
 
 
 @router.message(CommandStart())
-async def start(message: Message, state: FSMContext, ticket_service: TicketService) -> None:
+async def start(message: Message, state: FSMContext, user_service: UserService) -> None:
     await state.clear()
     if message.from_user is not None:
-        await ticket_service.ensure_user(message.from_user)
+        await user_service.ensure_user(message.from_user)
 
     await message.answer(
-        "Здравствуйте! 👋\n\nЯ бот службы поддержки. Выберите нужный раздел в меню ниже.",
+        "👋 <b>Здравствуйте!</b>\n\n"
+        "Я бот службы поддержки. Помогу создать обращение, посмотреть статус и найти ответы в FAQ.",
         reply_markup=main_menu_keyboard(),
     )
 
 
 @router.message(F.text.in_({MAIN_MENU, BACK}))
-async def show_main_menu(message: Message, state: FSMContext) -> None:
+async def main_menu(message: Message, state: FSMContext) -> None:
     await state.clear()
-    await message.answer("Главное меню открыто. Чем помочь?", reply_markup=main_menu_keyboard())
+    await message.answer("🏠 Главное меню. Чем помочь?", reply_markup=main_menu_keyboard())
 
 
-@router.callback_query(F.data == "main:menu")
-async def show_main_menu_from_callback(callback: CallbackQuery, state: FSMContext) -> None:
+@router.callback_query(F.data == "u:menu")
+async def main_menu_callback(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     await callback.answer()
-    await callback.message.answer("Главное меню открыто. Чем помочь?", reply_markup=main_menu_keyboard())
+    await callback.message.answer("🏠 Главное меню. Чем помочь?", reply_markup=main_menu_keyboard())
 
 
 @router.message(F.text == CREATE_TICKET)
-async def create_ticket_start(message: Message, state: FSMContext) -> None:
+async def create_ticket_start(message: Message, state: FSMContext, user_service: UserService, config: Config) -> None:
+    if not await _can_create_ticket(message, user_service, config):
+        return
+
     await state.set_state(CreateTicket.choosing_category)
-    await message.answer(
-        "Выберите тему обращения:",
-        reply_markup=categories_keyboard(),
-    )
+    await message.answer("📂 Выберите категорию обращения:", reply_markup=categories_keyboard())
 
 
-@router.callback_query(StateFilter(CreateTicket.choosing_category), F.data.startswith("ticket:category:"))
-async def choose_ticket_category(callback: CallbackQuery, state: FSMContext) -> None:
+@router.callback_query(StateFilter(CreateTicket.choosing_category), F.data.startswith("u:cat:"))
+async def choose_category(callback: CallbackQuery, state: FSMContext) -> None:
     category_code = callback.data.rsplit(":", 1)[-1]
     category = CATEGORIES.get(category_code)
     if category is None:
-        await callback.answer("Неизвестная категория", show_alert=True)
+        await callback.answer("Категория не найдена", show_alert=True)
         return
 
     await state.update_data(category=category, created_at=datetime.now().strftime("%d.%m.%Y %H:%M"))
     await state.set_state(CreateTicket.waiting_text)
     await callback.answer()
     await callback.message.answer(
-        f"Тема: {category}\n\nОпишите проблему одним сообщением.",
-        reply_markup=back_to_menu_keyboard(),
+        f"📂 <b>{html(category)}</b>\n\nОпишите проблему одним сообщением. Чем больше деталей, тем быстрее поможем.",
+        reply_markup=back_menu_keyboard(),
     )
 
 
@@ -97,15 +102,14 @@ async def choose_ticket_category(callback: CallbackQuery, state: FSMContext) -> 
 async def receive_ticket_text(message: Message, state: FSMContext) -> None:
     text = message.text.strip()
     if len(text) < 5:
-        await message.answer("Добавьте чуть больше деталей, чтобы мы быстрее помогли.")
+        await message.answer("Добавьте немного деталей: что случилось и что вы уже пробовали?")
         return
 
     await state.update_data(text=text)
     data = await state.get_data()
     await state.set_state(CreateTicket.preview)
-
     await message.answer(
-        _format_ticket_preview(data["category"], text, data["created_at"]),
+        format_ticket_preview(str(data["category"]), text, str(data["created_at"])),
         reply_markup=ticket_preview_keyboard(),
     )
 
@@ -115,83 +119,67 @@ async def receive_ticket_text_invalid(message: Message) -> None:
     await message.answer("Пожалуйста, отправьте описание проблемы текстом.")
 
 
-@router.callback_query(StateFilter(CreateTicket.preview), F.data == "ticket:edit_text")
+@router.callback_query(StateFilter(CreateTicket.preview), F.data == "u:ticket:edit")
 async def edit_ticket_text(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(CreateTicket.waiting_text)
     await callback.answer()
-    await callback.message.answer("Хорошо, отправьте новый текст обращения.", reply_markup=back_to_menu_keyboard())
+    await callback.message.answer("✏️ Отправьте новый текст обращения.", reply_markup=back_menu_keyboard())
 
 
-@router.callback_query(StateFilter(CreateTicket.preview), F.data == "ticket:cancel")
+@router.callback_query(StateFilter(CreateTicket.preview), F.data == "u:ticket:cancel")
 async def cancel_ticket(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
-    await callback.answer("Обращение отменено")
-    await callback.message.answer("Обращение отменено. Возвращаю в главное меню.", reply_markup=main_menu_keyboard())
+    await callback.answer("Отменено")
+    await callback.message.answer("❌ Обращение отменено.", reply_markup=main_menu_keyboard())
 
 
-@router.callback_query(StateFilter(CreateTicket.preview), F.data == "ticket:send")
+@router.callback_query(StateFilter(CreateTicket.preview), F.data == "u:ticket:send")
 async def send_ticket(
     callback: CallbackQuery,
     state: FSMContext,
     ticket_service: TicketService,
+    user_service: UserService,
     bot: Bot,
     config: Config,
 ) -> None:
     if callback.from_user is None:
         await callback.answer("Не удалось определить пользователя", show_alert=True)
         return
+    if await user_service.is_blocked(callback.from_user.id):
+        await state.clear()
+        await callback.answer("Доступ ограничен", show_alert=True)
+        await callback.message.answer("🚫 Доступ к поддержке ограничен.", reply_markup=main_menu_keyboard())
+        return
 
     data = await state.get_data()
-    ticket_id = await ticket_service.create_ticket(callback.from_user, data["category"], data["text"])
+    ticket_id = await ticket_service.create_ticket(callback.from_user, str(data["category"]), str(data["text"]))
     await state.clear()
-    await callback.answer("Обращение отправлено")
-    await callback.message.answer(
-        f"✅ Обращение #{ticket_id} создано.\n\n"
-        "Автоответ: мы получили ваш запрос и уже передали его в поддержку. "
-        "Статус можно проверить в разделе «Мои обращения».",
-        reply_markup=main_menu_keyboard(),
-    )
-    await _notify_admins(bot, config, ticket_service, ticket_id)
+
+    published = await publish_ticket_card(bot, config, ticket_service, ticket_id)
+    await callback.answer("Обращение создано")
+    if published:
+        await callback.message.answer(
+            f"✅ Обращение #{ticket_id} создано. Поддержка скоро ответит вам.",
+            reply_markup=main_menu_keyboard(),
+        )
+    else:
+        await callback.message.answer(
+            f"✅ Обращение #{ticket_id} создано, но сейчас не удалось уведомить поддержку. Мы сохранили заявку и попробуем обработать ее позже.",
+            reply_markup=main_menu_keyboard(),
+        )
 
 
-@router.message(F.text == CONTACT_OPERATOR)
-async def contact_operator_start(message: Message, state: FSMContext) -> None:
-    await state.set_state(CreateTicket.waiting_operator_text)
-    await message.answer(
-        "Опишите вопрос для оператора. Я создам обращение и передам его специалисту.",
-        reply_markup=back_to_menu_keyboard(),
-    )
-
-
-@router.message(StateFilter(CreateTicket.waiting_operator_text), F.text)
-async def contact_operator_text(
-    message: Message,
-    state: FSMContext,
-    ticket_service: TicketService,
-    bot: Bot,
-    config: Config,
-) -> None:
-    if message.from_user is None:
-        await message.answer("Не удалось определить пользователя. Попробуйте открыть меню через /start.")
+@router.message(F.text == CONTACT_SUPPORT)
+async def contact_support(message: Message, state: FSMContext, user_service: UserService, config: Config) -> None:
+    if not await _can_create_ticket(message, user_service, config):
         return
 
-    text = message.text.strip()
-    if len(text) < 3:
-        await message.answer("Напишите вопрос чуть подробнее.")
-        return
-
-    ticket_id = await ticket_service.create_ticket(message.from_user, "Оператор", text)
-    await state.clear()
+    await state.update_data(category="💬 Другое", created_at=datetime.now().strftime("%d.%m.%Y %H:%M"))
+    await state.set_state(CreateTicket.waiting_text)
     await message.answer(
-        f"👨‍💻 Обращение #{ticket_id} создано.\n\nОператор скоро ответит вам.",
-        reply_markup=main_menu_keyboard(),
+        "💬 Опишите вопрос для поддержки одним сообщением.",
+        reply_markup=back_menu_keyboard(),
     )
-    await _notify_admins(bot, config, ticket_service, ticket_id)
-
-
-@router.message(StateFilter(CreateTicket.waiting_operator_text))
-async def contact_operator_invalid(message: Message) -> None:
-    await message.answer("Пожалуйста, отправьте вопрос текстом.")
 
 
 @router.message(F.text == MY_TICKETS)
@@ -201,31 +189,38 @@ async def my_tickets(message: Message, ticket_service: TicketService) -> None:
     await _send_user_tickets(message, ticket_service, message.from_user.id)
 
 
-@router.callback_query(F.data == "ticket:list")
+@router.callback_query(F.data == "u:tickets")
 async def my_tickets_callback(callback: CallbackQuery, ticket_service: TicketService) -> None:
     await callback.answer()
     await _send_user_tickets(callback.message, ticket_service, callback.from_user.id)
 
 
-@router.callback_query(F.data.startswith("ticket:detail:"))
-async def show_ticket_detail(callback: CallbackQuery, ticket_service: TicketService) -> None:
-    ticket_id = int(callback.data.rsplit(":", 1)[-1])
+@router.callback_query(F.data.startswith("u:t:"))
+async def ticket_detail(callback: CallbackQuery, ticket_service: TicketService) -> None:
+    ticket_id = _callback_int_tail(callback.data)
+    if ticket_id is None:
+        await callback.answer("Некорректное действие", show_alert=True)
+        return
+
     ticket = await ticket_service.get_ticket_for_user(ticket_id, callback.from_user.id)
     await callback.answer()
-
     if ticket is None:
-        await callback.message.answer("Обращение не найдено или недоступно.")
+        await callback.message.answer("Обращение не найдено.", reply_markup=main_menu_keyboard())
         return
 
     await callback.message.answer(
-        _format_user_ticket(ticket),
-        reply_markup=user_ticket_detail_keyboard(ticket_id),
+        format_user_ticket(ticket),
+        reply_markup=user_ticket_detail_keyboard(ticket_id, str(ticket["status"])),
     )
 
 
-@router.callback_query(F.data.startswith("ticket:refresh:"))
-async def refresh_ticket_status(callback: CallbackQuery, ticket_service: TicketService) -> None:
-    ticket_id = int(callback.data.rsplit(":", 1)[-1])
+@router.callback_query(F.data.startswith("u:refresh:"))
+async def refresh_ticket(callback: CallbackQuery, ticket_service: TicketService) -> None:
+    ticket_id = _callback_int_tail(callback.data)
+    if ticket_id is None:
+        await callback.answer("Некорректное действие", show_alert=True)
+        return
+
     ticket = await ticket_service.get_ticket_for_user(ticket_id, callback.from_user.id)
     if ticket is None:
         await callback.answer("Обращение не найдено", show_alert=True)
@@ -233,79 +228,104 @@ async def refresh_ticket_status(callback: CallbackQuery, ticket_service: TicketS
 
     await callback.answer("Статус обновлен")
     await callback.message.answer(
-        _format_user_ticket(ticket),
-        reply_markup=user_ticket_detail_keyboard(ticket_id),
+        format_user_ticket(ticket),
+        reply_markup=user_ticket_detail_keyboard(ticket_id, str(ticket["status"])),
     )
 
 
-@router.callback_query(F.data.startswith("ticket:add_message:"))
-async def add_ticket_message_start(callback: CallbackQuery, state: FSMContext, ticket_service: TicketService) -> None:
-    ticket_id = int(callback.data.rsplit(":", 1)[-1])
+@router.callback_query(F.data.startswith("u:add:"))
+async def add_message_start(callback: CallbackQuery, state: FSMContext, ticket_service: TicketService, user_service: UserService) -> None:
+    ticket_id = _callback_int_tail(callback.data)
+    if ticket_id is None:
+        await callback.answer("Некорректное действие", show_alert=True)
+        return
+    if await user_service.is_blocked(callback.from_user.id):
+        await callback.answer("Доступ ограничен", show_alert=True)
+        await callback.message.answer("🚫 Доступ к поддержке ограничен.", reply_markup=main_menu_keyboard())
+        return
+
     ticket = await ticket_service.get_ticket_for_user(ticket_id, callback.from_user.id)
     if ticket is None:
         await callback.answer("Обращение не найдено", show_alert=True)
+        return
+    if str(ticket["status"]) == "closed":
+        await callback.answer("Обращение закрыто", show_alert=True)
+        await callback.message.answer("Это обращение закрыто. Создайте новое, если вопрос остался.", reply_markup=main_menu_keyboard())
         return
 
     await state.update_data(ticket_id=ticket_id)
     await state.set_state(AddTicketMessage.waiting_text)
     await callback.answer()
-    await callback.message.answer("Напишите дополнительное сообщение по обращению.", reply_markup=back_to_menu_keyboard())
+    await callback.message.answer("💬 Напишите дополнительное сообщение по обращению.", reply_markup=back_menu_keyboard())
 
 
 @router.message(StateFilter(AddTicketMessage.waiting_text), F.text)
-async def add_ticket_message(
+async def add_message_send(
     message: Message,
     state: FSMContext,
     ticket_service: TicketService,
+    user_service: UserService,
     bot: Bot,
     config: Config,
 ) -> None:
     if message.from_user is None:
         return
+    if await user_service.is_blocked(message.from_user.id):
+        await state.clear()
+        await message.answer("🚫 Доступ к поддержке ограничен.", reply_markup=main_menu_keyboard())
+        return
 
     data = await state.get_data()
     ticket_id = int(data["ticket_id"])
-    ticket = await ticket_service.get_ticket_for_user(ticket_id, message.from_user.id)
-    if ticket is None:
+    ticket = await ticket_service.get_ticket(ticket_id)
+    if ticket is None or int(ticket["telegram_id"]) != message.from_user.id:
         await state.clear()
-        await message.answer("Обращение не найдено. Возвращаю в меню.", reply_markup=main_menu_keyboard())
+        await message.answer("Обращение не найдено.", reply_markup=main_menu_keyboard())
+        return
+    if str(ticket["status"]) == "closed":
+        await state.clear()
+        await message.answer("Это обращение уже закрыто. Создайте новое обращение.", reply_markup=main_menu_keyboard())
         return
 
-    await ticket_service.add_message(ticket_id, "user", message.from_user.id, message.text.strip())
+    text = message.text.strip()
+    if len(text) < 2:
+        await message.answer("Сообщение слишком короткое. Напишите чуть подробнее.")
+        return
+
+    message_id = await ticket_service.add_message(ticket_id, "user", message.from_user.id, text)
     await state.clear()
-    await message.answer("💬 Сообщение добавлено к обращению.", reply_markup=main_menu_keyboard())
-    await _notify_admins_about_user_message(bot, config, ticket_service, ticket_id)
+    await message.answer("✅ Сообщение добавлено к обращению.", reply_markup=main_menu_keyboard())
+    await _notify_admin_about_user_message(bot, config, ticket_service, ticket_id, message_id, text)
 
 
 @router.message(StateFilter(AddTicketMessage.waiting_text))
-async def add_ticket_message_invalid(message: Message) -> None:
+async def add_message_invalid(message: Message) -> None:
     await message.answer("Пожалуйста, отправьте сообщение текстом.")
 
 
 @router.message(F.text == FAQ)
 async def faq(message: Message) -> None:
-    await message.answer("Выберите вопрос:", reply_markup=faq_keyboard())
+    await message.answer("❓ Выберите вопрос:", reply_markup=faq_keyboard())
 
 
-@router.callback_query(F.data == "faq:back")
-async def faq_back(callback: CallbackQuery) -> None:
+@router.callback_query(F.data == "u:faq")
+async def faq_callback(callback: CallbackQuery) -> None:
     await callback.answer()
-    await callback.message.answer("Выберите вопрос:", reply_markup=faq_keyboard())
+    await callback.message.answer("❓ Выберите вопрос:", reply_markup=faq_keyboard())
 
 
-@router.callback_query(F.data.startswith("faq:"))
+@router.callback_query(F.data.startswith("u:faq:"))
 async def faq_answer(callback: CallbackQuery) -> None:
     key = callback.data.rsplit(":", 1)[-1]
     question = FAQ_QUESTIONS.get(key)
     answer = FAQ_ANSWERS.get(key)
-
     if question is None or answer is None:
         await callback.answer("Ответ не найден", show_alert=True)
         return
 
     await callback.answer()
     await callback.message.answer(
-        f"❓ <b>{escape(question)}</b>\n\n{escape(answer)}",
+        f"❓ <b>{html(question)}</b>\n\n{html(answer)}",
         reply_markup=faq_answer_keyboard(),
     )
 
@@ -314,83 +334,63 @@ async def faq_answer(callback: CallbackQuery) -> None:
 async def about(message: Message) -> None:
     await message.answer(
         "ℹ️ <b>О сервисе</b>\n\n"
-        "Этот бот помогает быстро отправить вопрос в поддержку, получить автоответ "
-        "и отслеживать статус обращения без лишних команд.",
+        "Здесь можно создать обращение в поддержку, получить ответ оператора и отслеживать статус заявки без лишних команд.",
         reply_markup=main_menu_keyboard(),
     )
+
+
+async def _can_create_ticket(message: Message, user_service: UserService, config: Config) -> bool:
+    if message.from_user is None:
+        await message.answer("Не удалось определить пользователя. Откройте бота через /start.")
+        return False
+    await user_service.ensure_user(message.from_user)
+    if await user_service.is_blocked(message.from_user.id):
+        await message.answer("🚫 Доступ к поддержке ограничен.", reply_markup=main_menu_keyboard())
+        return False
+    if config.admin_chat_id is None:
+        await message.answer("⚠️ Поддержка временно не настроена. Попробуйте позже.", reply_markup=main_menu_keyboard())
+        return False
+    return True
 
 
 async def _send_user_tickets(message: Message, ticket_service: TicketService, telegram_id: int) -> None:
     tickets = await ticket_service.get_user_tickets(telegram_id)
     if not tickets:
-        await message.answer(
-            "У вас пока нет обращений. Можно создать первое через главное меню.",
-            reply_markup=main_menu_keyboard(),
-        )
+        await message.answer("У вас пока нет обращений. Создайте первое через главное меню.", reply_markup=main_menu_keyboard())
         return
-
-    await message.answer("Ваши обращения:", reply_markup=user_tickets_keyboard(tickets))
-
-
-async def _notify_admins(bot: Bot, config: Config, ticket_service: TicketService, ticket_id: int) -> None:
-    if not config.admin_ids:
-        return
-
-    ticket = await ticket_service.get_ticket(ticket_id)
-    if ticket is None:
-        return
-
-    for admin_id in config.admin_ids:
-        try:
-            await bot.send_message(admin_id, "📥 Новое обращение\n\n" + format_admin_ticket(ticket))
-        except TelegramAPIError:
-            continue
+    await message.answer("📋 <b>Ваши обращения</b>", reply_markup=user_tickets_keyboard(tickets))
 
 
-async def _notify_admins_about_user_message(
+async def _notify_admin_about_user_message(
     bot: Bot,
     config: Config,
     ticket_service: TicketService,
     ticket_id: int,
+    user_message_db_id: int,
+    text: str,
 ) -> None:
-    if not config.admin_ids:
+    if config.admin_chat_id is None:
         return
-
     ticket = await ticket_service.get_ticket(ticket_id)
     if ticket is None:
         return
 
-    for admin_id in config.admin_ids:
-        try:
-            await bot.send_message(admin_id, "💬 Новое сообщение от пользователя\n\n" + format_admin_ticket(ticket))
-        except TelegramAPIError:
-            continue
-
-
-def _format_ticket_preview(category: str, text: str, created_at: str) -> str:
-    return (
-        "📄 <b>Предпросмотр обращения</b>\n\n"
-        f"<b>Категория:</b> {escape(category)}\n"
-        f"<b>Текст:</b> {escape(text)}\n"
-        f"<b>Дата:</b> {escape(created_at)}\n"
-        f"<b>Статус:</b> {STATUS_EMOJI['new']} {STATUS_LABELS['new']}"
-    )
-
-
-def _format_user_ticket(ticket) -> str:
-    status = str(ticket["status"])
-    return (
-        f"📌 <b>Обращение #{ticket['id']}</b>\n\n"
-        f"<b>Категория:</b> {escape(str(ticket['category']))}\n"
-        f"<b>Текст:</b> {escape(str(ticket['text']))}\n"
-        f"<b>Статус:</b> {STATUS_EMOJI.get(status, '')} {STATUS_LABELS.get(status, status)}\n"
-        f"<b>Дата создания:</b> {escape(_human_datetime(str(ticket['created_at'])))}"
-    )
-
-
-def _human_datetime(value: str) -> str:
     try:
-        return datetime.fromisoformat(value).strftime("%d.%m.%Y %H:%M")
-    except ValueError:
-        return value
+        sent = await bot.send_message(
+            config.admin_chat_id,
+            format_user_message_notice(ticket, text),
+            reply_markup=admin_message_keyboard(ticket_id),
+        )
+    except TelegramAPIError as exc:
+        logger.warning("Failed to notify admin chat about ticket %s message: %s", ticket_id, exc)
+        return
 
+    await ticket_service.create_reply_link(ticket_id, sent.message_id)
+    await ticket_service.update_message_admin_id(user_message_db_id, sent.message_id)
+
+
+def _callback_int_tail(data: str | None) -> int | None:
+    if not data:
+        return None
+    raw = data.rsplit(":", 1)[-1]
+    return int(raw) if raw.isdigit() else None

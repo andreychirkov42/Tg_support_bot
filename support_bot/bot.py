@@ -8,8 +8,10 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 from .config import load_config
 from .database import Database
-from .handlers import admin, common, user
+from .handlers import admin_channel, common, user
+from .services.admin_service import AdminService
 from .services.ticket_service import TicketService
+from .services.user_service import UserService
 
 
 async def main() -> None:
@@ -19,9 +21,18 @@ async def main() -> None:
     )
 
     config = load_config()
+    if config.admin_chat_id is None:
+        logging.warning("ADMIN_CHAT_ID is empty. User ticket creation will be disabled.")
+    if not config.admin_ids:
+        logging.warning("ADMIN_IDS is empty. Admin buttons will be inaccessible.")
+
     database = Database(config.database_path)
     await database.connect()
     await database.init_schema()
+
+    user_service = UserService(database)
+    ticket_service = TicketService(database, user_service)
+    admin_service = AdminService(database)
 
     bot = Bot(
         token=config.bot_token,
@@ -30,9 +41,11 @@ async def main() -> None:
     dispatcher = Dispatcher(storage=MemoryStorage())
 
     dispatcher["config"] = config
-    dispatcher["ticket_service"] = TicketService(database)
+    dispatcher["user_service"] = user_service
+    dispatcher["ticket_service"] = ticket_service
+    dispatcher["admin_service"] = admin_service
 
-    dispatcher.include_router(admin.router)
+    dispatcher.include_router(admin_channel.router)
     dispatcher.include_router(user.router)
     dispatcher.include_router(common.router)
 
@@ -45,4 +58,3 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
-
