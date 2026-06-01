@@ -5,13 +5,14 @@ from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, Message, User
 
 from ..config import Config
 from ..keyboards import (
     BACK,
     CATEGORIES,
     CREATE_TICKET,
+    FEEDBACK,
     MAIN_MENU,
     MY_TICKETS,
     admin_message_keyboard,
@@ -22,10 +23,17 @@ from ..keyboards import (
     user_ticket_detail_keyboard,
     user_tickets_keyboard,
 )
+from ..services.feedback_service import FeedbackService
 from ..services.ticket_service import TicketService
 from ..services.user_service import UserService
-from ..states import AddTicketMessage, CreateTicket
-from ..utils.formatting import format_ticket_preview, format_user_message_notice, format_user_ticket, html
+from ..states import AddTicketMessage, CreateTicket, SendFeedback
+from ..utils.formatting import (
+    format_feedback_notice,
+    format_ticket_preview,
+    format_user_message_notice,
+    format_user_ticket,
+    html,
+)
 from .admin_channel import publish_ticket_card
 
 
@@ -277,6 +285,56 @@ async def add_message_invalid(message: Message) -> None:
     await message.answer("Пожалуйста, отправьте сообщение текстом.")
 
 
+@router.message(F.text == FEEDBACK)
+async def feedback_start(message: Message, state: FSMContext, user_service: UserService) -> None:
+    if message.from_user is None:
+        await message.answer("Не удалось определить пользователя. Откройте бота через /start.")
+        return
+    await user_service.ensure_user(message.from_user)
+    if await user_service.is_blocked(message.from_user.id):
+        await message.answer("🚫 Доступ к поддержке ограничен.", reply_markup=main_menu_keyboard())
+        return
+
+    await state.set_state(SendFeedback.waiting_text)
+    await message.answer(
+        "💡 Поделитесь отзывом или предложением одним сообщением. "
+        "Это не создаёт обращение — мы просто прочитаем ваш фидбек.",
+        reply_markup=back_menu_keyboard(),
+    )
+
+
+@router.message(StateFilter(SendFeedback.waiting_text), F.text)
+async def feedback_send(
+    message: Message,
+    state: FSMContext,
+    feedback_service: FeedbackService,
+    user_service: UserService,
+    bot: Bot,
+    config: Config,
+) -> None:
+    if message.from_user is None:
+        return
+    if await user_service.is_blocked(message.from_user.id):
+        await state.clear()
+        await message.answer("🚫 Доступ к поддержке ограничен.", reply_markup=main_menu_keyboard())
+        return
+
+    text = message.text.strip()
+    if len(text) < 5:
+        await message.answer("Напишите чуть подробнее — так отзыв будет полезнее.")
+        return
+
+    await feedback_service.create_feedback(message.from_user, text)
+    await state.clear()
+    await message.answer("🙏 Спасибо за отзыв! Мы обязательно его учтём.", reply_markup=main_menu_keyboard())
+    await _notify_admin_about_feedback(bot, config, message.from_user, text)
+
+
+@router.message(StateFilter(SendFeedback.waiting_text))
+async def feedback_invalid(message: Message) -> None:
+    await message.answer("Пожалуйста, отправьте отзыв текстом.")
+
+
 async def _can_create_ticket(message: Message, user_service: UserService, config: Config) -> bool:
     if message.from_user is None:
         await message.answer("Не удалось определить пользователя. Откройте бота через /start.")
@@ -325,6 +383,15 @@ async def _notify_admin_about_user_message(
 
     await ticket_service.create_reply_link(ticket_id, sent.message_id)
     await ticket_service.update_message_admin_id(user_message_db_id, sent.message_id)
+
+
+async def _notify_admin_about_feedback(bot: Bot, config: Config, user: User, text: str) -> None:
+    if config.admin_chat_id is None:
+        return
+    try:
+        await bot.send_message(config.admin_chat_id, format_feedback_notice(user, text))
+    except TelegramAPIError as exc:
+        logger.warning("Failed to notify admin chat about feedback from %s: %s", user.id, exc)
 
 
 def _callback_int_tail(data: str | None) -> int | None:

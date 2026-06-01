@@ -10,6 +10,7 @@ from .config import load_config
 from .database import Database
 from .handlers import admin_channel, common, user
 from .services.admin_service import AdminService
+from .services.feedback_service import FeedbackService
 from .services.ticket_service import TicketService
 from .services.user_service import UserService
 
@@ -33,6 +34,7 @@ async def main() -> None:
     user_service = UserService(database)
     ticket_service = TicketService(database, user_service)
     admin_service = AdminService(database)
+    feedback_service = FeedbackService(database, user_service)
 
     bot = Bot(
         token=config.bot_token,
@@ -44,6 +46,7 @@ async def main() -> None:
     dispatcher["user_service"] = user_service
     dispatcher["ticket_service"] = ticket_service
     dispatcher["admin_service"] = admin_service
+    dispatcher["feedback_service"] = feedback_service
 
     dispatcher.include_router(admin_channel.router)
     dispatcher.include_router(user.router)

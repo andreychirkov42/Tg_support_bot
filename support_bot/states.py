@@ -9,3 +9,7 @@ class CreateTicket(StatesGroup):
 
 class AddTicketMessage(StatesGroup):
     waiting_text = State()
+
+
+class SendFeedback(StatesGroup):
+    waiting_text = State()

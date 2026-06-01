@@ -86,6 +86,20 @@ def format_user_message_notice(ticket: Mapping[str, object], text: str) -> str:
     )
 
 
+def format_feedback_notice(user: object, text: str) -> str:
+    username_value = getattr(user, "username", None)
+    username = f"@{username_value}" if username_value else "без username"
+    first_name = getattr(user, "first_name", None) or "Без имени"
+    return (
+        "💡 <b>Новый отзыв / предложение</b>\n\n"
+        "👤 <b>Пользователь:</b>\n"
+        f"• {html(first_name)} ({html(username)})\n"
+        f"• Telegram ID: {code(getattr(user, 'id', ''))}\n\n"
+        "📝 <b>Текст:</b>\n"
+        f"{html(cut_text(text, 1600))}"
+    )
+
+
 def format_ticket_history(ticket: Mapping[str, object], messages: Sequence[Mapping[str, object]]) -> str:
     lines = [format_admin_ticket(ticket, title=f"👁 <b>История обращения #{ticket['id']}</b>")]
     if not messages:

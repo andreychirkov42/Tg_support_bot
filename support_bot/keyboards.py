@@ -7,6 +7,7 @@ from .config import STATUS_EMOJI, STATUS_LABELS
 
 CREATE_TICKET = "🆘 Создать обращение"
 MY_TICKETS = "📋 Мои обращения"
+FEEDBACK = "💡 Отзывы и предложения"
 MAIN_MENU = "🏠 Главное меню"
 BACK = "🔙 Назад"
 
@@ -22,6 +23,7 @@ def main_menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=CREATE_TICKET), KeyboardButton(text=MY_TICKETS)],
+            [KeyboardButton(text=FEEDBACK)],
         ],
         resize_keyboard=True,
         input_field_placeholder="Выберите действие",
