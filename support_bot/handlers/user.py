@@ -9,20 +9,14 @@ from aiogram.types import CallbackQuery, Message
 
 from ..config import Config
 from ..keyboards import (
-    ABOUT,
     BACK,
     CATEGORIES,
-    CONTACT_SUPPORT,
     CREATE_TICKET,
-    FAQ,
-    FAQ_QUESTIONS,
     MAIN_MENU,
     MY_TICKETS,
     admin_message_keyboard,
     back_menu_keyboard,
     categories_keyboard,
-    faq_answer_keyboard,
-    faq_keyboard,
     main_menu_keyboard,
     ticket_preview_keyboard,
     user_ticket_detail_keyboard,
@@ -38,13 +32,6 @@ from .admin_channel import publish_ticket_card
 router = Router(name="user")
 logger = logging.getLogger(__name__)
 
-FAQ_ANSWERS = {
-    "payment": "Оплата проходит на странице заказа. Если платеж не прошел или списание есть, а доступ не появился, создайте обращение в категории «Оплата».",
-    "access": "Используйте восстановление доступа на странице входа. Если письмо не пришло, создайте обращение в категории «Аккаунт».",
-    "order": "Статус заказа обновляется автоматически. Если обновлений давно нет, создайте обращение в категории «Заказ» и укажите номер заказа.",
-    "support": "Нажмите «Связаться с поддержкой» или «Создать обращение», опишите вопрос, и оператор ответит прямо здесь.",
-}
-
 
 @router.message(CommandStart())
 async def start(message: Message, state: FSMContext, user_service: UserService) -> None:
@@ -54,7 +41,7 @@ async def start(message: Message, state: FSMContext, user_service: UserService) 
 
     await message.answer(
         "👋 <b>Здравствуйте!</b>\n\n"
-        "Я бот службы поддержки. Помогу создать обращение, посмотреть статус и найти ответы в FAQ.",
+        "Я бот службы поддержки. Помогу создать обращение и посмотреть его статус.",
         reply_markup=main_menu_keyboard(),
     )
 
@@ -167,19 +154,6 @@ async def send_ticket(
             f"✅ Обращение #{ticket_id} создано, но сейчас не удалось уведомить поддержку. Мы сохранили заявку и попробуем обработать ее позже.",
             reply_markup=main_menu_keyboard(),
         )
-
-
-@router.message(F.text == CONTACT_SUPPORT)
-async def contact_support(message: Message, state: FSMContext, user_service: UserService, config: Config) -> None:
-    if not await _can_create_ticket(message, user_service, config):
-        return
-
-    await state.update_data(category="💬 Другое", created_at=datetime.now().strftime("%d.%m.%Y %H:%M"))
-    await state.set_state(CreateTicket.waiting_text)
-    await message.answer(
-        "💬 Опишите вопрос для поддержки одним сообщением.",
-        reply_markup=back_menu_keyboard(),
-    )
 
 
 @router.message(F.text == MY_TICKETS)
@@ -301,42 +275,6 @@ async def add_message_send(
 @router.message(StateFilter(AddTicketMessage.waiting_text))
 async def add_message_invalid(message: Message) -> None:
     await message.answer("Пожалуйста, отправьте сообщение текстом.")
-
-
-@router.message(F.text == FAQ)
-async def faq(message: Message) -> None:
-    await message.answer("❓ Выберите вопрос:", reply_markup=faq_keyboard())
-
-
-@router.callback_query(F.data == "u:faq")
-async def faq_callback(callback: CallbackQuery) -> None:
-    await callback.answer()
-    await callback.message.answer("❓ Выберите вопрос:", reply_markup=faq_keyboard())
-
-
-@router.callback_query(F.data.startswith("u:faq:"))
-async def faq_answer(callback: CallbackQuery) -> None:
-    key = callback.data.rsplit(":", 1)[-1]
-    question = FAQ_QUESTIONS.get(key)
-    answer = FAQ_ANSWERS.get(key)
-    if question is None or answer is None:
-        await callback.answer("Ответ не найден", show_alert=True)
-        return
-
-    await callback.answer()
-    await callback.message.answer(
-        f"❓ <b>{html(question)}</b>\n\n{html(answer)}",
-        reply_markup=faq_answer_keyboard(),
-    )
-
-
-@router.message(F.text == ABOUT)
-async def about(message: Message) -> None:
-    await message.answer(
-        "ℹ️ <b>О сервисе</b>\n\n"
-        "Здесь можно создать обращение в поддержку, получить ответ оператора и отслеживать статус заявки без лишних команд.",
-        reply_markup=main_menu_keyboard(),
-    )
 
 
 async def _can_create_ticket(message: Message, user_service: UserService, config: Config) -> bool:

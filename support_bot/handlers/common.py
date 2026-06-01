@@ -30,7 +30,7 @@ async def help_command(message: Message, config: Config) -> None:
     if is_admin_chat_id(message.chat.id, config):
         return
     await message.answer(
-        "Используйте кнопки меню, чтобы создать обращение, посмотреть FAQ или связаться с поддержкой.",
+        "Используйте кнопки меню, чтобы создать обращение или посмотреть свои обращения.",
         reply_markup=main_menu_keyboard(),
     )
 

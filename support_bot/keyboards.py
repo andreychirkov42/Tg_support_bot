@@ -7,9 +7,6 @@ from .config import STATUS_EMOJI, STATUS_LABELS
 
 CREATE_TICKET = "🆘 Создать обращение"
 MY_TICKETS = "📋 Мои обращения"
-FAQ = "❓ FAQ"
-CONTACT_SUPPORT = "💬 Связаться с поддержкой"
-ABOUT = "ℹ️ О сервисе"
 MAIN_MENU = "🏠 Главное меню"
 BACK = "🔙 Назад"
 
@@ -21,20 +18,10 @@ CATEGORIES = {
     "other": "💬 Другое",
 }
 
-FAQ_QUESTIONS = {
-    "payment": "Как оплатить?",
-    "access": "Как восстановить доступ?",
-    "order": "Где мой заказ?",
-    "support": "Как связаться с поддержкой?",
-}
-
-
 def main_menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=CREATE_TICKET), KeyboardButton(text=MY_TICKETS)],
-            [KeyboardButton(text=FAQ), KeyboardButton(text=CONTACT_SUPPORT)],
-            [KeyboardButton(text=ABOUT)],
         ],
         resize_keyboard=True,
         input_field_placeholder="Выберите действие",
@@ -97,24 +84,6 @@ def user_ticket_detail_keyboard(ticket_id: int, status: str) -> InlineKeyboardMa
         ]
     )
     return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def faq_keyboard() -> InlineKeyboardMarkup:
-    rows = [
-        [InlineKeyboardButton(text=question, callback_data=f"u:faq:{code}")]
-        for code, question in FAQ_QUESTIONS.items()
-    ]
-    rows.append([InlineKeyboardButton(text=BACK, callback_data="u:menu")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def faq_answer_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text=BACK, callback_data="u:faq")],
-            [InlineKeyboardButton(text=MAIN_MENU, callback_data="u:menu")],
-        ]
-    )
 
 
 def admin_panel_keyboard() -> InlineKeyboardMarkup:
